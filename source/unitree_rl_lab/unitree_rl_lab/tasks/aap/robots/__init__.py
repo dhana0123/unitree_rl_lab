@@ -1,0 +1,1 @@
+"""AAP robot task registrations."""
