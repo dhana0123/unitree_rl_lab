@@ -255,10 +255,16 @@ class RewardsCfg:
     base_angular_velocity = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.1)
     joint_vel = RewTerm(func=mdp.joint_vel_l2, weight=-0.002)
     joint_acc = RewTerm(func=mdp.joint_acc_l2, weight=-2.5e-7)
-    # Stronger than the locomotion task's action_rate weight (-0.05): pi_L1 is
-    # specifically the "smooth handoff" policy, so we directly incentivize low
-    # action discontinuity (AAP Section 6's c2*||tau_t - tau_{t-1}||^2 term).
-    action_rate = RewTerm(func=mdp.action_rate_l2, weight=-0.2)
+    # NOTE: this used to be -0.2 ("stronger than locomotion's -0.05, to directly
+    # incentivize a smooth handoff"). Training logs + standalone bank-drop eval
+    # showed this backfired: Episode_Reward/action_rate (~-0.46) ended up
+    # bigger in magnitude than *every other penalty term combined* and ~13x
+    # bigger than flat_orientation_l2 (~-0.036) -- i.e. the policy was being
+    # punished more for moving fast to catch itself than for actually falling
+    # over, so it learned to stay passive and only react (too late) once
+    # already failing. Reverted to the locomotion default; override with
+    # AAP_ACTION_RATE_WEIGHT for further ablation without editing this file.
+    action_rate = RewTerm(func=mdp.action_rate_l2, weight=float(os.environ.get("AAP_ACTION_RATE_WEIGHT", "-0.05")))
     dof_pos_limits = RewTerm(func=mdp.joint_pos_limits, weight=-5.0)
     energy = RewTerm(func=mdp.energy, weight=-2e-5)
 
@@ -272,14 +278,18 @@ class RewardsCfg:
             )
         },
     )
+    # These also fight the exact DOFs a real recovery move needs (torso twist,
+    # hip abduction/step). Left at their original weight for now so the
+    # action_rate fix above is an isolated, single-variable change -- but
+    # exposed via env var in case action_rate alone isn't enough.
     joint_deviation_waists = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-1.0,
+        weight=float(os.environ.get("AAP_JOINT_DEV_WAISTS_WEIGHT", "-1.0")),
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=["waist.*"])},
     )
     joint_deviation_legs = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-1.0,
+        weight=float(os.environ.get("AAP_JOINT_DEV_LEGS_WEIGHT", "-1.0")),
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_roll_joint", ".*_hip_yaw_joint"])},
     )
 
