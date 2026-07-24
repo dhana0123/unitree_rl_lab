@@ -158,6 +158,21 @@ class EventCfg:
         params={"velocity_range": {"x": (-0.6, 0.6), "y": (-0.6, 0.6)}},
     )
 
+    # AAP Section 6, "randomize WHEN the band is entered": periodically
+    # (per-env, staggered by interval_range_s) re-teleport a Bernoulli(prob)
+    # subset of envs to a fresh pi_L2-induced state, mid-episode, without
+    # ending it. Gives pi_L1 multiple randomized handoff moments per episode
+    # instead of only one at reset, while remaining fully on-policy.
+    reteleport_l2_states = EventTerm(
+        func=aap_mdp.reteleport_from_l2_bank,
+        mode="interval",
+        interval_range_s=(3.0, 5.0),
+        params={
+            "bank_path": os.environ.get("AAP_L2_BANK_PATH", "logs/aap/l2_state_bank.pt"),
+            "prob": float(os.environ.get("AAP_L2_RETELEPORT_PROB", "0.5")),
+        },
+    )
+
 
 @configclass
 class CommandsCfg:

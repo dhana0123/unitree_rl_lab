@@ -54,6 +54,31 @@ def _load_bank(path: str, device: torch.device) -> dict[str, torch.Tensor] | Non
     return bank
 
 
+def _apply_bank_states(env: ManagerBasedEnv, env_ids: torch.Tensor, bank: dict[str, torch.Tensor], asset: Articulation):
+    """Teleport `env_ids` to freshly-sampled physical states from `bank`."""
+    device = asset.device
+    n_bank = bank["root_pos_rel"].shape[0]
+    pick = torch.randint(0, n_bank, (len(env_ids),), device=device)
+
+    origins = env.scene.env_origins[env_ids]
+    positions = bank["root_pos_rel"][pick] + origins
+    orientations = bank["root_quat"][pick]
+    pose = torch.cat([positions, orientations], dim=-1)
+    asset.write_root_pose_to_sim(pose, env_ids=env_ids)
+
+    velocities = torch.cat([bank["root_lin_vel"][pick], bank["root_ang_vel"][pick]], dim=-1)
+    if hasattr(asset, "write_root_velocity_to_sim"):
+        asset.write_root_velocity_to_sim(velocities, env_ids=env_ids)
+    else:
+        asset.write_root_link_velocity_to_sim(velocities, env_ids=env_ids)
+
+    joint_pos = bank["joint_pos"][pick].clone()
+    joint_vel = bank["joint_vel"][pick].clone()
+    joint_pos_limits = asset.data.soft_joint_pos_limits[env_ids]
+    joint_pos = joint_pos.clamp(joint_pos_limits[..., 0], joint_pos_limits[..., 1])
+    asset.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
+
+
 def reset_from_l2_bank(
     env: ManagerBasedEnv,
     env_ids: torch.Tensor,
@@ -66,7 +91,7 @@ def reset_from_l2_bank(
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ):
     """Reset root state + joints from a mix of a pi_L2-induced state bank and a
-    uniform-box fallback.
+    uniform-box fallback. (Runs at ``mode="reset"``, i.e. episode start.)
 
     For each env id, with probability ``bank_prob`` sample a full physical state
     (root pose+velocity, joint pos+velocity) recorded from real pi_L2 rollouts.
@@ -93,23 +118,38 @@ def reset_from_l2_bank(
         reset_joints_by_scale(env, uniform_ids, joint_position_range, joint_velocity_range, asset_cfg=asset_cfg)
 
     if len(bank_ids) > 0:
-        n_bank = bank["root_pos_rel"].shape[0]
-        pick = torch.randint(0, n_bank, (len(bank_ids),), device=device)
+        _apply_bank_states(env, bank_ids, bank, asset)
 
-        origins = env.scene.env_origins[bank_ids]
-        positions = bank["root_pos_rel"][pick] + origins
-        orientations = bank["root_quat"][pick]
-        pose = torch.cat([positions, orientations], dim=-1)
-        asset.write_root_pose_to_sim(pose, env_ids=bank_ids)
 
-        velocities = torch.cat([bank["root_lin_vel"][pick], bank["root_ang_vel"][pick]], dim=-1)
-        if hasattr(asset, "write_root_velocity_to_sim"):
-            asset.write_root_velocity_to_sim(velocities, env_ids=bank_ids)
-        else:
-            asset.write_root_link_velocity_to_sim(velocities, env_ids=bank_ids)
+def reteleport_from_l2_bank(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor,
+    bank_path: str,
+    prob: float = 0.5,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+):
+    """Mid-episode randomized re-entry. (Runs at ``mode="interval"``, i.e.
+    periodically *during* an ongoing episode, without ending it.)
 
-        joint_pos = bank["joint_pos"][pick].clone()
-        joint_vel = bank["joint_vel"][pick].clone()
-        joint_pos_limits = asset.data.soft_joint_pos_limits[bank_ids]
-        joint_pos = joint_pos.clamp(joint_pos_limits[..., 0], joint_pos_limits[..., 1])
-        asset.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=bank_ids)
+    Isaac Lab's EventManager already staggers *when* each env id gets called
+    here per-env, via the term's ``interval_range_s``. On top of that, only a
+    Bernoulli(``prob``) subset of the envs due this tick are actually
+    re-teleported to a fresh state sampled from the pi_L2-induced bank; the
+    rest simply continue their current pi_L1-controlled trajectory
+    uninterrupted. This implements the AAP formalization's
+    ``b_t ~ Bernoulli(p_abst)`` idea (randomize *when* the band is entered)
+    while remaining fully on-policy for pi_L1's PPO training: only the state
+    is perturbed, every action in the rollout (before and after the
+    teleport) is still genuinely pi_L1's own choice.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    device = asset.device
+    bank = _load_bank(bank_path, device)
+    if bank is None or len(env_ids) == 0:
+        return
+
+    hit = torch.rand(len(env_ids), device=device) < prob
+    hit_ids = env_ids[hit]
+    if len(hit_ids) == 0:
+        return
+    _apply_bank_states(env, hit_ids, bank, asset)
