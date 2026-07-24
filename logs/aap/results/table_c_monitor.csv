@@ -2,3 +2,4 @@ split,dataset,safe_acc,unsafe_acc,overall_acc,val_loss,best_epoch,n_val,n_safe,n
 weak push,ds_push_weak.pt,0.6775,0.6613,0.675,0.1957,3,400,338,62
 medium push,ds_push_medium.pt,0.8771,0.729,0.8375,0.2084,9,400,293,107
 strong push (2k),ds_push_strong.pt,0.8246,0.8559,0.8425,0.4557,13,400,171,229
+final (20k),stoppability_dataset.pt,0.8705,0.8213,0.8465,0.3654,15,4000,2047,1953
