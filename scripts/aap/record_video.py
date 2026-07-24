@@ -25,6 +25,15 @@ import argparse
 import sys
 from pathlib import Path
 
+# Isaac Lab's ManagerBasedEnv.cfg.validate() recursively walks the (deeply
+# nested) env config tree. With render_mode="rgb_array" set for video capture,
+# the extra call-stack depth from this script's own function nesting (main ->
+# _record_one -> gym.make -> ... -> cfg.validate) can push that recursion
+# right up against Python's default limit of 1000, raising a RecursionError
+# that looks like "[Previous line repeated 988 more times]". Bump the limit
+# so the (legitimate, non-infinite) recursion has room to finish.
+sys.setrecursionlimit(5000)
+
 _SCRIPTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_SCRIPTS))
 sys.path.insert(0, str(_SCRIPTS / "rsl_rl"))
