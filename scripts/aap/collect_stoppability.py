@@ -74,6 +74,16 @@ parser.add_argument(
     default=0.2,
     help="When using --vstop, probability to keep easy (confident+success) samples.",
 )
+parser.add_argument(
+    "--success_keep_prob",
+    type=float,
+    default=None,
+    help=(
+        "No-monitor-needed success subsampling: keep ALL failures, keep successes with this "
+        "probability. Lets a single collection pass land near a target pos_rate without a "
+        "bootstrap V_stop. Ignored if --vstop is set (uses --easy_keep_prob logic instead)."
+    ),
+)
 parser.add_argument("--append", action="store_true", help="Append to existing --output dataset if present.")
 parser.add_argument("--output", type=str, default="logs/aap/stoppability_dataset.pt")
 parser.add_argument("--seed", type=int, default=42)
@@ -138,21 +148,32 @@ def _apply_push(env, vx: float, vy: float):
 
 
 def _keep_mask(success: torch.Tensor, v_pred: torch.Tensor | None, args) -> torch.Tensor:
-    """Decide which envs to keep in the dataset (failure-near bias)."""
+    """Decide which envs to keep in the dataset (failure-near bias).
+
+    Always keeps every failure. Successes are subsampled so failures aren't
+    drowned out, using whichever bias signal is available:
+      - if a V_stop monitor is provided: keep uncertain (boundary) successes,
+        subsample confident/easy successes at --easy_keep_prob.
+      - else if --success_keep_prob is set (<1.0): subsample ALL successes at
+        that flat rate (no monitor needed).
+      - else: keep everything (original, unbiased behavior).
+    """
     device = success.device
     n = success.shape[0]
-    keep = torch.ones(n, dtype=torch.bool, device=device)
+    failed = ~success
+    rand = torch.rand(n, device=device)
 
-    if v_pred is None:
+    if v_pred is not None:
+        uncertain = (v_pred >= args.v_low) & (v_pred <= args.v_high)
+        easy = success & ~uncertain
+        keep = failed | uncertain | (easy & (rand < args.easy_keep_prob))
         return keep
 
-    failed = ~success
-    uncertain = (v_pred >= args.v_low) & (v_pred <= args.v_high)
-    easy = success & ~uncertain
-    rand = torch.rand(n, device=device) < args.easy_keep_prob
-    # Always keep failures + uncertain; subsample easy successes.
-    keep = failed | uncertain | (easy & rand)
-    return keep
+    if args.success_keep_prob is not None and args.success_keep_prob < 1.0:
+        keep = failed | (success & (rand < args.success_keep_prob))
+        return keep
+
+    return torch.ones(n, dtype=torch.bool, device=device)
 
 
 def main():
@@ -276,6 +297,7 @@ def main():
         "v_low": args_cli.v_low,
         "v_high": args_cli.v_high,
         "easy_keep_prob": args_cli.easy_keep_prob,
+        "success_keep_prob": args_cli.success_keep_prob,
         "skipped": skipped,
         "seed": args_cli.seed,
         "collected_at": datetime.now().isoformat(timespec="seconds"),
