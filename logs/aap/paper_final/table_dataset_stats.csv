@@ -1,2 +1,0 @@
-dataset,total_samples,obs_dim,safe_n,unsafe_n,unsafe_ratio_pct,num_envs,fallback_horizon,push_vx,push_vy,push_delay,sample_interval,vstop_filter,checkpoint_l2,checkpoint_l1,collected_at
-final,15000,480,9362,5638,37.59,64,100,0.9,0.4,4,25,,model_15000.pt,model_12500.pt,2026-07-24T20:49:34
