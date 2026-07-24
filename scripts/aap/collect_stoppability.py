@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import datetime
 from pathlib import Path
 
 _SCRIPTS = Path(__file__).resolve().parents[1]
@@ -256,7 +257,30 @@ def main():
 
     out.parent.mkdir(parents=True, exist_ok=True)
     labels = torch.stack(label_buf)
-    torch.save({"obs": torch.stack(obs_buf), "labels": labels}, out)
+    metadata = {
+        "task_l2": args_cli.task_l2,
+        "task_l1": args_cli.task_l1,
+        "checkpoint_l2": str(args_cli.checkpoint_l2),
+        "checkpoint_l1": str(args_cli.checkpoint_l1),
+        "num_envs": args_cli.num_envs,
+        "warmup_steps": args_cli.warmup_steps,
+        "sample_interval": args_cli.sample_interval,
+        "fallback_horizon": args_cli.fallback_horizon,
+        "push_before_sample": bool(args_cli.push_before_sample),
+        "push_vx": args_cli.push_vx,
+        "push_vy": args_cli.push_vy,
+        "push_delay": args_cli.push_delay,
+        "min_height": args_cli.min_height,
+        "max_tilt": args_cli.max_tilt,
+        "vstop_filter": args_cli.vstop,
+        "v_low": args_cli.v_low,
+        "v_high": args_cli.v_high,
+        "easy_keep_prob": args_cli.easy_keep_prob,
+        "skipped": skipped,
+        "seed": args_cli.seed,
+        "collected_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    torch.save({"obs": torch.stack(obs_buf), "labels": labels, "metadata": metadata}, out)
     print(
         f"[INFO] Saved {len(obs_buf)} samples to {out}  "
         f"pos_rate={labels.mean().item():.3f}  unsafe={(labels < 0.5).sum().item()}"
