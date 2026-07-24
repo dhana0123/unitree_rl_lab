@@ -245,17 +245,25 @@ def main():
     policy_l2, _ = load_inference_policy(env, agent_l2, ckpt_l2)
     policy_l1, _ = load_inference_policy(env, agent_l1, ckpt_l1)
 
-    # Infer obs dim from one forward.
-    obs0 = to_policy_tensor(_get_obs(env))
-    vstop_net = load_vstop(args_cli.vstop, obs_dim=obs0.shape[-1], device=env.unwrapped.device)
+    # NOTE: keep every env interaction (resets included) inside a single
+    # inference_mode context. Auto-resets triggered from inside a step() call
+    # that runs under inference_mode() can lazily allocate internal buffers
+    # (e.g. root_link_pose_w) as "inference tensors"; a later env.reset()
+    # called outside inference_mode would then fail with
+    # "Inplace update to inference tensor outside InferenceMode is not
+    # allowed" when writing to those same buffers.
+    with torch.inference_mode():
+        # Infer obs dim from one forward.
+        obs0 = to_policy_tensor(_get_obs(env))
+        vstop_net = load_vstop(args_cli.vstop, obs_dim=obs0.shape[-1], device=env.unwrapped.device)
 
-    all_rows: list[dict] = []
-    conditions = [c.strip() for c in args_cli.conditions.split(",") if c.strip()]
-    for cond in conditions:
-        print(f"[INFO] Evaluating condition: {cond}")
-        env.reset()
-        rows = _run_condition(env, policy_l2, policy_l1, vstop_net, cond, args_cli)
-        all_rows.extend(rows)
+        all_rows: list[dict] = []
+        conditions = [c.strip() for c in args_cli.conditions.split(",") if c.strip()]
+        for cond in conditions:
+            print(f"[INFO] Evaluating condition: {cond}")
+            env.reset()
+            rows = _run_condition(env, policy_l2, policy_l1, vstop_net, cond, args_cli)
+            all_rows.extend(rows)
 
     _write_tables(all_rows, out_dir)
 
