@@ -8,6 +8,7 @@ Derived from the stock velocity locomotion task, with:
 """
 
 import math
+import os
 
 import isaaclab.sim as sim_utils
 import isaaclab.terrains as terrain_gen
@@ -27,6 +28,7 @@ from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR, ISAACLAB_NUCLEUS_DIR
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 
 from unitree_rl_lab.assets.robots.unitree import UNITREE_G1_29DOF_CFG as ROBOT_CFG
+from unitree_rl_lab.tasks.aap import mdp as aap_mdp
 from unitree_rl_lab.tasks.locomotion import mdp
 
 FLAT_TERRAIN_CFG = terrain_gen.TerrainGeneratorCfg(
@@ -123,11 +125,18 @@ class EventCfg:
         },
     )
 
-    # Wider velocity ranges = mid-walk / push-like starts for robust π_L1.
-    reset_base = EventTerm(
-        func=mdp.reset_root_state_uniform,
+    # AAP randomized-entry training: mix real pi_L2-induced states (recorded via
+    # scripts/aap/collect_l2_states.py, i.e. actual mid-gait / post-push states)
+    # with the original uniform-box reset, so pi_L1 learns to recover from
+    # realistic handoff states rather than only generic random poses. If the
+    # bank file doesn't exist yet, this transparently falls back to the
+    # uniform-box reset (same behavior as before).
+    reset_base_and_joints = EventTerm(
+        func=aap_mdp.reset_from_l2_bank,
         mode="reset",
         params={
+            "bank_path": os.environ.get("AAP_L2_BANK_PATH", "logs/aap/l2_state_bank.pt"),
+            "bank_prob": float(os.environ.get("AAP_L2_BANK_PROB", "0.6")),
             "pose_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5), "yaw": (-3.14, 3.14)},
             "velocity_range": {
                 "x": (-0.8, 0.8),
@@ -137,15 +146,8 @@ class EventCfg:
                 "pitch": (-0.3, 0.3),
                 "yaw": (-0.5, 0.5),
             },
-        },
-    )
-
-    reset_robot_joints = EventTerm(
-        func=mdp.reset_joints_by_scale,
-        mode="reset",
-        params={
-            "position_range": (0.9, 1.1),
-            "velocity_range": (-1.0, 1.0),
+            "joint_position_range": (0.9, 1.1),
+            "joint_velocity_range": (-1.0, 1.0),
         },
     )
 
@@ -238,7 +240,10 @@ class RewardsCfg:
     base_angular_velocity = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.1)
     joint_vel = RewTerm(func=mdp.joint_vel_l2, weight=-0.002)
     joint_acc = RewTerm(func=mdp.joint_acc_l2, weight=-2.5e-7)
-    action_rate = RewTerm(func=mdp.action_rate_l2, weight=-0.05)
+    # Stronger than the locomotion task's action_rate weight (-0.05): pi_L1 is
+    # specifically the "smooth handoff" policy, so we directly incentivize low
+    # action discontinuity (AAP Section 6's c2*||tau_t - tau_{t-1}||^2 term).
+    action_rate = RewTerm(func=mdp.action_rate_l2, weight=-0.2)
     dof_pos_limits = RewTerm(func=mdp.joint_pos_limits, weight=-5.0)
     energy = RewTerm(func=mdp.energy, weight=-2e-5)
 
