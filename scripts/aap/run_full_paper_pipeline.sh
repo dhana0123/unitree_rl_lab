@@ -73,12 +73,37 @@ echo "  OUT: $OUT"
 
 echo
 echo "=================================================================="
-echo "[1/5] Auto-collect stoppability dataset + train V_stop"
+echo "[1a/5] Auto-find push strength"
 echo "=================================================================="
-bash scripts/aap/auto_collect_stoppability.sh "$L1" "$L2" "$OUT"
+bash scripts/aap/find_push_strength.sh "$L1" "$L2" "$OUT"
+
+echo
+echo "=================================================================="
+echo "[1b/5] Collect dataset"
+echo "=================================================================="
+bash scripts/aap/collect_dataset.sh "$L1" "$L2" "" "" "$OUT"
+
+echo
+echo "=================================================================="
+echo "[1c/5] Dataset stats table"
+echo "=================================================================="
+python scripts/aap/dataset_stats.py \
+  --dataset "$DATASET" \
+  --labels "final" \
+  --output "$OUT/table_dataset_stats.csv"
+
+echo
+echo "=================================================================="
+echo "[1d/5] Train V_stop + Table C"
+echo "=================================================================="
+python scripts/aap/train_vstop.py \
+  --dataset "$DATASET" \
+  --output "$VSTOP_FINAL" \
+  --table_output "$OUT/table_c_monitor.csv" \
+  --split_name "final"
 
 if [ ! -f "$DATASET" ] || [ ! -f "$VSTOP_FINAL" ]; then
-  echo "[ERROR] Expected $DATASET and $VSTOP_FINAL after auto_collect_stoppability.sh"
+  echo "[ERROR] Expected $DATASET and $VSTOP_FINAL after dataset collection"
   exit 1
 fi
 
