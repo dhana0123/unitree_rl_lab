@@ -67,7 +67,17 @@ def main():
         )
 
     obs_dim = obs.shape[-1]
+    n_pos = int((labels > 0.5).sum().item())
+    n_neg = int((labels <= 0.5).sum().item())
     print(f"[INFO] Loaded {len(obs)} samples, obs_dim={obs_dim}, pos_rate={labels.mean().item():.3f}")
+    print(f"[INFO] n_safe(pos)={n_pos}  n_unsafe(neg)={n_neg}")
+    if n_pos < 50 or n_neg < 50:
+        print(
+            "[WARN] Fewer than 50 examples in one class (n_safe={} n_unsafe={}). "
+            "V_stop cannot learn a real decision boundary from this few contrastive examples "
+            "and will likely collapse to a near-constant output. Collect more of the "
+            "minority class before training a monitor you plan to deploy.".format(n_pos, n_neg)
+        )
 
     dataset = TensorDataset(obs, labels)
     n_val = max(1, int(len(dataset) * args.val_ratio))
