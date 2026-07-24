@@ -1,3 +1,0 @@
-alpha_low,alpha_high,fall_rate,success_rate,mean_peak_jerk,notes
-0.7,0.7,,,,hard switch (=PRISM)
-0.3,0.8,,,,fill by re-running --conditions aap

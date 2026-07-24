@@ -1,2 +1,0 @@
-dataset,total_samples,obs_dim,safe_n,unsafe_n,unsafe_ratio_pct,num_envs,fallback_horizon,push_vx,push_vy,push_delay,sample_interval,vstop_filter,checkpoint_l2,checkpoint_l1,collected_at
-final (post reward-fix L1),15000,480,13144,1856,12.37,64,100,0.9,0.4,5,25,,model_15000.pt,model_12500.pt,2026-07-24T18:03:42
