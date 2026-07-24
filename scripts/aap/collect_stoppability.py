@@ -1,21 +1,37 @@
-"""Collect stoppability labels by intervening with π_L1 during π_L2 rollouts.
+"""Collect stoppability labels, biased toward failure-near / boundary states.
 
-Example:
+Two bias modes (can combine):
+  1) --push_before_sample: disturb with a velocity push, cruise a few L2 steps,
+     then hand off to π_L1 (more unstoppable / boundary labels).
+  2) --vstop PATH: after a candidate trigger, keep the sample if
+        - L1 failed (y=0), or
+        - V_stop is uncertain (in [v_low, v_high]), or
+        - random keep with --easy_keep_prob (so easy states are not zero).
+
+Example (recommended for paper):
   python scripts/aap/collect_stoppability.py --headless \\
-    --checkpoint_l2 logs/rsl_rl/unitree_g1_29dof_velocity/.../model_*.pt \\
-    --checkpoint_l1 logs/rsl_rl/unitree_g1_29dof_safestop/.../model_*.pt \\
-    --num_envs 64 --num_samples 2000 --output logs/aap/stoppability_dataset.pt
+    --checkpoint_l2 .../model_14900.pt --checkpoint_l1 .../model_5000.pt \\
+    --num_envs 64 --num_samples 15000 \\
+    --push_before_sample --push_vx 0.9 --push_vy 0.4 \\
+    --sample_interval 25 --warmup_steps 30 \\
+    --output logs/aap/stoppability_dataset.pt
+
+Second pass (boundary refine with a trained monitor):
+  python scripts/aap/collect_stoppability.py --headless \\
+    --checkpoint_l2 ... --checkpoint_l1 ... --vstop logs/aap/vstop.pt \\
+    --num_samples 8000 --push_before_sample \\
+    --v_low 0.25 --v_high 0.75 --easy_keep_prob 0.15 \\
+    --append --output logs/aap/stoppability_dataset.pt
 """
 
-"""Launch Isaac Sim Simulator first."""
-
 from __future__ import annotations
+
+"""Launch Isaac Sim Simulator first."""
 
 import argparse
 import sys
 from pathlib import Path
 
-# scripts/ and scripts/rsl_rl on path for shared helpers
 _SCRIPTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_SCRIPTS))
 sys.path.insert(0, str(_SCRIPTS / "rsl_rl"))
@@ -23,25 +39,48 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from isaaclab.app import AppLauncher
 
-import cli_args  # noqa: E402  # scripts/rsl_rl/cli_args.py
+import cli_args  # noqa: E402
 
-parser = argparse.ArgumentParser(description="Collect AAP stoppability dataset.")
+parser = argparse.ArgumentParser(description="Collect AAP stoppability dataset (failure-near biased).")
 parser.add_argument("--task_l2", type=str, default="Unitree-G1-29dof-Velocity")
 parser.add_argument("--task_l1", type=str, default="Unitree-G1-29dof-SafeStop")
 parser.add_argument("--checkpoint_l2", type=str, required=True)
 parser.add_argument("--checkpoint_l1", type=str, required=True)
+parser.add_argument("--vstop", type=str, default=None, help="Optional monitor for uncertain-state filtering")
 parser.add_argument("--num_envs", type=int, default=64)
-parser.add_argument("--num_samples", type=int, default=2000)
-parser.add_argument("--warmup_steps", type=int, default=50)
-parser.add_argument("--sample_interval", type=int, default=40)
+parser.add_argument("--num_samples", type=int, default=15000)
+parser.add_argument("--warmup_steps", type=int, default=30)
+parser.add_argument("--sample_interval", type=int, default=25)
 parser.add_argument("--fallback_horizon", type=int, default=100)
 parser.add_argument("--min_height", type=float, default=0.45)
 parser.add_argument("--max_tilt", type=float, default=0.7)
+# Failure-near bias
+parser.add_argument(
+    "--push_before_sample",
+    action="store_true",
+    default=True,
+    help="Apply a velocity push before each L1 handoff (default: on).",
+)
+parser.add_argument("--no_push_before_sample", action="store_true", help="Disable push-before-sample.")
+parser.add_argument("--push_vx", type=float, default=0.9)
+parser.add_argument("--push_vy", type=float, default=0.4)
+parser.add_argument("--push_delay", type=int, default=5, help="L2 steps after push before handoff.")
+parser.add_argument("--v_low", type=float, default=0.25, help="Uncertain band low (with --vstop)")
+parser.add_argument("--v_high", type=float, default=0.75, help="Uncertain band high (with --vstop)")
+parser.add_argument(
+    "--easy_keep_prob",
+    type=float,
+    default=0.2,
+    help="When using --vstop, probability to keep easy (confident+success) samples.",
+)
+parser.add_argument("--append", action="store_true", help="Append to existing --output dataset if present.")
 parser.add_argument("--output", type=str, default="logs/aap/stoppability_dataset.pt")
 parser.add_argument("--seed", type=int, default=42)
 cli_args.add_rsl_rl_args(parser)
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
+if args_cli.no_push_before_sample:
+    args_cli.push_before_sample = False
 
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
@@ -59,6 +98,7 @@ import unitree_rl_lab.tasks  # noqa: F401
 from unitree_rl_lab.utils.parser_cfg import parse_env_cfg
 
 from policy_utils import load_inference_policy  # noqa: E402
+from vstop_model import load_vstop  # noqa: E402
 
 
 def _get_obs(env):
@@ -74,6 +114,44 @@ def _root_height_tilt(env):
     grav = robot.data.projected_gravity_b
     tilt = torch.acos(torch.clamp(-grav[:, 2], -1.0, 1.0))
     return height, tilt
+
+
+def _apply_push(env, vx: float, vy: float):
+    robot = env.unwrapped.scene["robot"]
+    try:
+        lin = robot.data.root_lin_vel_w.clone()
+        ang = robot.data.root_ang_vel_w.clone()
+        # Randomize push sign/magnitude a bit for diversity
+        n = lin.shape[0]
+        sx = torch.sign(torch.randn(n, device=lin.device))
+        sy = torch.sign(torch.randn(n, device=lin.device))
+        lin[:, 0] += sx * vx
+        lin[:, 1] += sy * abs(vy)
+        root_vel = torch.cat([lin, ang], dim=-1)
+        if hasattr(robot, "write_root_velocity_to_sim"):
+            robot.write_root_velocity_to_sim(root_vel)
+        elif hasattr(robot, "write_root_link_velocity_to_sim"):
+            robot.write_root_link_velocity_to_sim(root_vel)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[WARN] Push failed: {exc}")
+
+
+def _keep_mask(success: torch.Tensor, v_pred: torch.Tensor | None, args) -> torch.Tensor:
+    """Decide which envs to keep in the dataset (failure-near bias)."""
+    device = success.device
+    n = success.shape[0]
+    keep = torch.ones(n, dtype=torch.bool, device=device)
+
+    if v_pred is None:
+        return keep
+
+    failed = ~success
+    uncertain = (v_pred >= args.v_low) & (v_pred <= args.v_high)
+    easy = success & ~uncertain
+    rand = torch.rand(n, device=device) < args.easy_keep_prob
+    # Always keep failures + uncertain; subsample easy successes.
+    keep = failed | uncertain | (easy & rand)
+    return keep
 
 
 def main():
@@ -93,15 +171,31 @@ def main():
     ckpt_l1 = retrieve_file_path(args_cli.checkpoint_l1)
     print(f"[INFO] Loading π_L2 from {ckpt_l2}")
     print(f"[INFO] Loading π_L1 from {ckpt_l1}")
+    print(f"[INFO] push_before_sample={args_cli.push_before_sample}  vstop={args_cli.vstop}")
 
     policy_l2, _ = load_inference_policy(env, agent_l2, ckpt_l2)
     policy_l1, _ = load_inference_policy(env, agent_l1, ckpt_l1)
 
+    vstop_net = None
+    if args_cli.vstop:
+        obs0 = _get_obs(env)
+        vstop_net = load_vstop(args_cli.vstop, obs_dim=obs0.shape[-1], device=env.unwrapped.device)
+        print(f"[INFO] Loaded V_stop filter band=[{args_cli.v_low}, {args_cli.v_high}]")
+
     obs_buf: list[torch.Tensor] = []
     label_buf: list[torch.Tensor] = []
 
+    out = Path(args_cli.output)
+    if args_cli.append and out.exists():
+        old = torch.load(out, map_location="cpu", weights_only=False)
+        for i in range(len(old["labels"])):
+            obs_buf.append(old["obs"][i].cpu())
+            label_buf.append(old["labels"][i].cpu().reshape(()).float())
+        print(f"[INFO] Append mode: loaded {len(obs_buf)} existing samples from {out}")
+
     obs = _get_obs(env)
     step = 0
+    skipped = 0
     torch.manual_seed(args_cli.seed)
 
     with torch.inference_mode():
@@ -113,7 +207,17 @@ def main():
                 step += 1
                 continue
 
+            # --- Failure-near: push, then a few L2 steps, then handoff ---
+            if args_cli.push_before_sample:
+                _apply_push(env, args_cli.push_vx, args_cli.push_vy)
+                for _ in range(max(0, args_cli.push_delay)):
+                    actions = policy_l2(obs)
+                    obs, _, _, _ = env.step(actions)
+                    step += 1
+
             trigger_obs = obs.detach().clone()
+            v_pred = vstop_net(trigger_obs) if vstop_net is not None else None
+
             fell = torch.zeros(env.unwrapped.num_envs, dtype=torch.bool, device=env.unwrapped.device)
             for _ in range(args_cli.fallback_horizon):
                 actions = policy_l1(obs)
@@ -125,24 +229,43 @@ def main():
 
             height, tilt = _root_height_tilt(env)
             success = (~fell) & (height >= args_cli.min_height) & (tilt <= args_cli.max_tilt)
+            keep = _keep_mask(success, v_pred, args_cli)
 
+            kept_this = 0
             for i in range(env.unwrapped.num_envs):
                 if len(obs_buf) >= args_cli.num_samples:
                     break
+                if not bool(keep[i].item()):
+                    skipped += 1
+                    continue
                 obs_buf.append(trigger_obs[i].cpu())
                 label_buf.append(torch.tensor(float(success[i].item())))
+                kept_this += 1
 
+            labels_t = torch.stack(label_buf) if label_buf else torch.zeros(0)
+            pos_rate = float(labels_t.mean().item()) if len(labels_t) else 0.0
+            unsafe_n = int((labels_t < 0.5).sum().item()) if len(labels_t) else 0
             print(
                 f"[INFO] collected {len(obs_buf)}/{args_cli.num_samples}  "
-                f"batch_success={success.float().mean().item():.3f}"
+                f"batch_keep={kept_this}/{env.unwrapped.num_envs}  "
+                f"batch_success={success.float().mean().item():.3f}  "
+                f"pos_rate={pos_rate:.3f}  unsafe={unsafe_n}  skipped={skipped}"
             )
 
             obs = _get_obs(env)
 
-    out = Path(args_cli.output)
     out.parent.mkdir(parents=True, exist_ok=True)
-    torch.save({"obs": torch.stack(obs_buf), "labels": torch.stack(label_buf)}, out)
-    print(f"[INFO] Saved dataset with {len(obs_buf)} samples to {out}")
+    labels = torch.stack(label_buf)
+    torch.save({"obs": torch.stack(obs_buf), "labels": labels}, out)
+    print(
+        f"[INFO] Saved {len(obs_buf)} samples to {out}  "
+        f"pos_rate={labels.mean().item():.3f}  unsafe={(labels < 0.5).sum().item()}"
+    )
+    if labels.mean().item() > 0.92:
+        print(
+            "[WARN] pos_rate > 0.92 (too few failures). "
+            "Increase --push_vx/--push_vy, lower --push_delay, or run a --vstop refine pass."
+        )
     env.close()
 
 

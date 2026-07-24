@@ -7,9 +7,9 @@ Example:
     --output_dir logs/aap/results
 """
 
-"""Launch Isaac Sim Simulator first."""
-
 from __future__ import annotations
+
+"""Launch Isaac Sim Simulator first."""
 
 import argparse
 import csv
