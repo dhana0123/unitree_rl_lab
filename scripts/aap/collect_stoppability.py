@@ -99,7 +99,7 @@ import unitree_rl_lab.tasks  # noqa: F401
 from unitree_rl_lab.utils.parser_cfg import parse_env_cfg
 
 from policy_utils import load_inference_policy  # noqa: E402
-from vstop_model import load_vstop  # noqa: E402
+from vstop_model import load_vstop, to_policy_tensor  # noqa: E402
 
 
 def _get_obs(env):
@@ -179,7 +179,7 @@ def main():
 
     vstop_net = None
     if args_cli.vstop:
-        obs0 = _get_obs(env)
+        obs0 = to_policy_tensor(_get_obs(env))
         vstop_net = load_vstop(args_cli.vstop, obs_dim=obs0.shape[-1], device=env.unwrapped.device)
         print(f"[INFO] Loaded V_stop filter band=[{args_cli.v_low}, {args_cli.v_high}]")
 
@@ -216,7 +216,7 @@ def main():
                     obs, _, _, _ = env.step(actions)
                     step += 1
 
-            trigger_obs = obs.detach().clone()
+            trigger_obs = to_policy_tensor(obs).detach().clone()
             v_pred = vstop_net(trigger_obs) if vstop_net is not None else None
 
             fell = torch.zeros(env.unwrapped.num_envs, dtype=torch.bool, device=env.unwrapped.device)

@@ -32,9 +32,19 @@ def parse_args():
     return p.parse_args()
 
 
+def _to_policy_tensor(obs):
+    """Extract the flat policy tensor if obs is a dict/TensorDict with a 'policy' key."""
+    if torch.is_tensor(obs):
+        return obs
+    try:
+        return obs["policy"]
+    except (KeyError, TypeError, IndexError):
+        return obs
+
+
 def _row_for(path: str, label: str) -> dict:
     data = torch.load(path, map_location="cpu", weights_only=False)
-    obs = data["obs"]
+    obs = _to_policy_tensor(data["obs"])
     labels = data["labels"].float().view(-1)
     meta = data.get("metadata", {})
 

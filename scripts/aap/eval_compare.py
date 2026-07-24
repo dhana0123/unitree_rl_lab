@@ -70,7 +70,7 @@ from unitree_rl_lab.utils.parser_cfg import parse_env_cfg
 
 from controller import select_controller  # noqa: E402
 from policy_utils import load_inference_policy  # noqa: E402
-from vstop_model import load_vstop  # noqa: E402
+from vstop_model import load_vstop, to_policy_tensor  # noqa: E402
 
 
 def _get_obs(env):
@@ -131,7 +131,7 @@ def _run_condition(env, policy_l2, policy_l1, vstop_net, condition: str, args) -
 
             a2 = policy_l2(obs)
             a1 = policy_l1(obs)
-            v = vstop_net(obs)
+            v = vstop_net(to_policy_tensor(obs))
             out = select_controller(
                 condition,
                 a2,
@@ -246,7 +246,7 @@ def main():
     policy_l1, _ = load_inference_policy(env, agent_l1, ckpt_l1)
 
     # Infer obs dim from one forward.
-    obs0 = _get_obs(env)
+    obs0 = to_policy_tensor(_get_obs(env))
     vstop_net = load_vstop(args_cli.vstop, obs_dim=obs0.shape[-1], device=env.unwrapped.device)
 
     all_rows: list[dict] = []

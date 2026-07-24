@@ -6,6 +6,22 @@ import torch
 import torch.nn as nn
 
 
+def to_policy_tensor(obs) -> torch.Tensor:
+    """Extract the flat policy observation tensor.
+
+    Newer Isaac Lab / rsl-rl (>=2.3) versions return observations as a
+    dict-like / TensorDict object with a "policy" key (plus e.g. "critic"),
+    rather than a bare tensor. Downstream code (dataset storage, V_stop
+    inference) needs a plain (N, obs_dim) tensor, so unwrap it here.
+    """
+    if torch.is_tensor(obs):
+        return obs
+    try:
+        return obs["policy"]
+    except (KeyError, TypeError, IndexError):
+        return obs
+
+
 class StoppabilityMonitor(nn.Module):
     """Predicts V_stop(x) in [0, 1]: P(π_L1 can safely reach MRC from x)."""
 

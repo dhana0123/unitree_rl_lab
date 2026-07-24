@@ -18,7 +18,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset, random_split
 
-from vstop_model import StoppabilityMonitor
+from vstop_model import StoppabilityMonitor, to_policy_tensor
 
 
 def parse_args():
@@ -47,10 +47,24 @@ def main():
     torch.manual_seed(args.seed)
 
     data = torch.load(args.dataset, map_location="cpu", weights_only=False)
-    obs = data["obs"].float()
+    obs = to_policy_tensor(data["obs"])
+    if not torch.is_tensor(obs):
+        raise TypeError(
+            f"Could not extract a plain policy tensor from dataset['obs'] (got {type(obs)}). "
+            "This dataset was likely collected before the TensorDict-unwrap fix in "
+            "collect_stoppability.py — re-run collection to regenerate it."
+        )
+    obs = obs.float()
     labels = data["labels"].float()
     if labels.ndim > 1:
         labels = labels.view(-1)
+
+    if obs.shape[0] != labels.shape[0]:
+        raise ValueError(
+            f"obs/labels count mismatch: obs has {obs.shape[0]} rows but labels has {labels.shape[0]}. "
+            "This dataset is likely corrupted (e.g. obs saved as a TensorDict with batch_size=(N,) "
+            "instead of a (N, obs_dim) tensor) — re-run collect_stoppability.py to regenerate it."
+        )
 
     obs_dim = obs.shape[-1]
     print(f"[INFO] Loaded {len(obs)} samples, obs_dim={obs_dim}, pos_rate={labels.mean().item():.3f}")
