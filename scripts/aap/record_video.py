@@ -77,9 +77,54 @@ parser.add_argument(
     help="Comma-separated: always_l2,always_l1,hard_switch,aap",
 )
 parser.add_argument("--name_prefix", type=str, default="aap_demo", help="Filename prefix for saved videos")
+# Internal flag: marks this process as a single-condition worker, set only by
+# the re-exec below. Not meant to be passed by users (hence SUPPRESS).
+parser.add_argument("--_worker", action="store_true", default=False, help=argparse.SUPPRESS)
 cli_args.add_rsl_rl_args(parser)
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
+
+# Recording more than one condition inside a single Isaac Sim process is
+# unreliable: creating a second ManagerBasedRLEnv after closing the first one
+# (as this script used to do once per condition, plus an extra "probe" env)
+# leaves the config/scene machinery in a bad state, and with
+# render_mode="rgb_array" this manifests as a genuine infinite recursion in
+# Isaac Lab's cfg.validate() (RecursionError, not fixed by raising the
+# recursion limit). The reference play.py --video flow only ever creates ONE
+# env per process, which is why it works. So: if multiple conditions were
+# requested, re-launch this same script once per condition as a brand-new
+# subprocess (each gets a fresh simulation_app), rather than looping
+# gym.make() calls in-process.
+_conditions_preview = [c.strip() for c in args_cli.conditions.split(",") if c.strip()]
+if len(_conditions_preview) > 1 and not args_cli._worker:
+    import subprocess
+
+    def _strip_conditions(argv: list[str]) -> list[str]:
+        out = []
+        skip_next = False
+        for a in argv:
+            if skip_next:
+                skip_next = False
+                continue
+            if a == "--conditions":
+                skip_next = True
+                continue
+            if a.startswith("--conditions="):
+                continue
+            out.append(a)
+        return out
+
+    base_argv = _strip_conditions(sys.argv[1:])
+    for cond in _conditions_preview:
+        cmd = [sys.executable, str(Path(__file__).resolve())] + base_argv + ["--conditions", cond, "--_worker"]
+        print(f"[INFO] Launching subprocess for condition={cond}")
+        print(f"[INFO] Command: {' '.join(cmd)}")
+        result = subprocess.run(cmd)
+        if result.returncode != 0:
+            print(f"[ERROR] Subprocess for condition={cond} exited with code {result.returncode}")
+            sys.exit(result.returncode)
+    print("[INFO] All conditions recorded.")
+    sys.exit(0)
 
 # Cameras required for rgb_array / RecordVideo
 args_cli.enable_cameras = True
@@ -130,7 +175,7 @@ def _apply_push(env, vx: float, vy: float):
         print(f"[WARN] Scripted push failed ({exc}).")
 
 
-def _record_one(condition: str, video_length: int, out_dir: Path):
+def _record_one(condition: str, out_dir: Path):
     """Build env, load policies, record one MP4 for this condition."""
     cond_dir = out_dir / condition
     cond_dir.mkdir(parents=True, exist_ok=True)
@@ -141,6 +186,21 @@ def _record_one(condition: str, video_length: int, out_dir: Path):
         num_envs=args_cli.num_envs,
         entry_point_key="play_env_cfg_entry_point",
     )
+
+    # Compute video_length from the parsed cfg directly (decimation * sim.dt)
+    # instead of instantiating a throwaway "probe" env just to read step_dt.
+    # This script creates exactly one real environment per process now, to
+    # avoid the in-process env-recreation recursion bug described above.
+    if args_cli.video_length is None:
+        step_dt = float(env_cfg.decimation * env_cfg.sim.dt)
+        video_length = max(1, int(round(args_cli.duration_sec / step_dt)))
+        print(
+            f"[INFO] duration_sec={args_cli.duration_sec} / step_dt={step_dt:.4f} "
+            f"-> video_length={video_length} steps (~{video_length * step_dt / 60:.2f} min sim)"
+        )
+    else:
+        video_length = args_cli.video_length
+        print(f"[INFO] Using explicit --video_length={video_length}")
 
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array")
 
@@ -226,28 +286,8 @@ def main():
     if any(c.lower() not in {"always_l2", "l2", "always_l1", "l1"} for c in conditions) and not args_cli.vstop:
         raise ValueError("--vstop is required when recording hard_switch or aap")
 
-    # Probe step_dt once with a tiny env to compute length from duration.
-    if args_cli.video_length is None:
-        probe_cfg = parse_env_cfg(
-            args_cli.task,
-            device=args_cli.device,
-            num_envs=1,
-            entry_point_key="play_env_cfg_entry_point",
-        )
-        probe = gym.make(args_cli.task, cfg=probe_cfg)
-        step_dt = float(probe.unwrapped.step_dt)
-        probe.close()
-        video_length = max(1, int(round(args_cli.duration_sec / step_dt)))
-        print(
-            f"[INFO] duration_sec={args_cli.duration_sec} / step_dt={step_dt:.4f} "
-            f"-> video_length={video_length} steps (~{video_length * step_dt / 60:.2f} min sim)"
-        )
-    else:
-        video_length = args_cli.video_length
-        print(f"[INFO] Using explicit --video_length={video_length}")
-
     for cond in conditions:
-        _record_one(cond, video_length, out_dir)
+        _record_one(cond, out_dir)
 
     print(f"[INFO] Done. All videos in: {out_dir.resolve()}")
 
