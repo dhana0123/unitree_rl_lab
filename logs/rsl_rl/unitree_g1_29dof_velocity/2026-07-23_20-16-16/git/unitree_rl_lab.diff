@@ -1,0 +1,42 @@
+--- git status ---
+On branch app
+Your branch is up to date with 'origin/app'.
+
+Changes not staged for commit:
+  (use "git add/rm <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	deleted:    logs/rsl_rl/unitree_g1_29dof_velocity/2026-07-23_14-48-22/model_1000.pt
+	deleted:    logs/rsl_rl/unitree_g1_29dof_velocity/2026-07-23_14-48-22/model_2000.pt
+	deleted:    logs/rsl_rl/unitree_g1_29dof_velocity/2026-07-23_14-48-22/model_4400.pt
+
+no changes added to commit (use "git add" and/or "git commit -a") 
+
+
+--- git diff ---
+diff --git a/logs/rsl_rl/unitree_g1_29dof_velocity/2026-07-23_14-48-22/model_1000.pt b/logs/rsl_rl/unitree_g1_29dof_velocity/2026-07-23_14-48-22/model_1000.pt
+deleted file mode 100644
+index 39b8dd2..0000000
+--- a/logs/rsl_rl/unitree_g1_29dof_velocity/2026-07-23_14-48-22/model_1000.pt
++++ /dev/null
+@@ -1,3 +0,0 @@
+-version https://git-lfs.github.com/spec/v1
+-oid sha256:c168d7bf290ef846feee2331542b0030c8c4512a2ad76c602a633e06b7a84b95
+-size 10011509
+diff --git a/logs/rsl_rl/unitree_g1_29dof_velocity/2026-07-23_14-48-22/model_2000.pt b/logs/rsl_rl/unitree_g1_29dof_velocity/2026-07-23_14-48-22/model_2000.pt
+deleted file mode 100644
+index a54bc88..0000000
+--- a/logs/rsl_rl/unitree_g1_29dof_velocity/2026-07-23_14-48-22/model_2000.pt
++++ /dev/null
+@@ -1,3 +0,0 @@
+-version https://git-lfs.github.com/spec/v1
+-oid sha256:94be071a2868ab49d1ea450a4f5202549d840e4083644628ddf8c0f80327b4eb
+-size 10011509
+diff --git a/logs/rsl_rl/unitree_g1_29dof_velocity/2026-07-23_14-48-22/model_4400.pt b/logs/rsl_rl/unitree_g1_29dof_velocity/2026-07-23_14-48-22/model_4400.pt
+deleted file mode 100644
+index 5ead089..0000000
+--- a/logs/rsl_rl/unitree_g1_29dof_velocity/2026-07-23_14-48-22/model_4400.pt
++++ /dev/null
+@@ -1,3 +0,0 @@
+-version https://git-lfs.github.com/spec/v1
+-oid sha256:38bb9032afefa0eb1a8af5a6af22621e563a0de574de22e6695ef167d7d7d29a
+-size 10011509

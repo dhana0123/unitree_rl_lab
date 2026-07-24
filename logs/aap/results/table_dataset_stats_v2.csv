@@ -1,0 +1,5 @@
+dataset,total_samples,obs_dim,safe_n,unsafe_n,unsafe_ratio_pct,num_envs,fallback_horizon,push_vx,push_vy,push_delay,sample_interval,vstop_filter,checkpoint_l2,checkpoint_l1,collected_at
+weak push (v2),2000,480,1342,658,32.9,64,100,0.3,0.15,5,25,,model_15000.pt,model_4999.pt,2026-07-24T09:18:46
+medium push (v2),2000,480,1064,936,46.8,64,100,0.6,0.3,5,25,,model_15000.pt,model_4999.pt,2026-07-24T09:21:17
+strong push (v2),2000,480,896,1104,55.2,64,100,0.9,0.4,5,25,,model_15000.pt,model_4999.pt,2026-07-24T09:23:50
+"final (20k, v2)",20000,480,8874,11126,55.63,64,100,0.9,0.4,5,25,,model_15000.pt,model_4999.pt,2026-07-24T09:46:46
