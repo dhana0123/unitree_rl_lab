@@ -1,0 +1,2 @@
+split,dataset,safe_acc,unsafe_acc,overall_acc,val_loss,best_epoch,n_val,n_safe,n_unsafe
+final,stoppability_dataset_final.pt,0.5717,0.6743,0.5837,0.1554,5,3000,2650,350
