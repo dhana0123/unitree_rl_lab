@@ -60,6 +60,12 @@ parser.add_argument("--push_vy", type=float, default=0.0)
 parser.add_argument("--alpha", type=float, default=0.7)
 parser.add_argument("--alpha_low", type=float, default=0.5)
 parser.add_argument("--alpha_high", type=float, default=0.7)
+parser.add_argument(
+    "--ema_beta",
+    type=float,
+    default=0.85,
+    help="Temporal smoothing on the AAP blend weight w (0 = no smoothing). Only affects 'aap'.",
+)
 parser.add_argument("--output_dir", type=str, default="logs/aap/videos")
 parser.add_argument(
     "--conditions",
@@ -173,6 +179,8 @@ def _record_one(condition: str, video_length: int, out_dir: Path):
         f"~{video_length * step_dt:.1f}s sim time"
     )
 
+    prev_w = torch.ones(env.unwrapped.num_envs, device=env.unwrapped.device)
+
     with torch.inference_mode():
         for t in range(video_length):
             if not simulation_app.is_running():
@@ -197,7 +205,10 @@ def _record_one(condition: str, video_length: int, out_dir: Path):
                 alpha=args_cli.alpha,
                 alpha_low=args_cli.alpha_low,
                 alpha_high=args_cli.alpha_high,
+                w_prev=prev_w,
+                ema_beta=args_cli.ema_beta,
             )
+            prev_w = out.w_l2
             obs, _, _, _ = env.step(out.actions)
 
             if (t + 1) % 500 == 0:

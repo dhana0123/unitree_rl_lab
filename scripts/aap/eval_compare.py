@@ -40,6 +40,13 @@ parser.add_argument("--push_vy", type=float, default=0.0)
 parser.add_argument("--alpha", type=float, default=0.7, help="Hard-switch threshold")
 parser.add_argument("--alpha_low", type=float, default=0.5)
 parser.add_argument("--alpha_high", type=float, default=0.7)
+parser.add_argument(
+    "--ema_beta",
+    type=float,
+    default=0.85,
+    help="Temporal smoothing on the AAP blend weight w (0 = no smoothing / original memoryless behavior, "
+    "closer to 1 = slower/steadier transitions). Only affects the 'aap' condition.",
+)
 parser.add_argument("--min_height", type=float, default=0.45)
 parser.add_argument("--max_tilt", type=float, default=0.7)
 parser.add_argument("--output_dir", type=str, default="logs/aap/results")
@@ -111,11 +118,19 @@ def _run_condition(env, policy_l2, policy_l1, vstop_net, condition: str, args) -
     rows: list[dict] = []
     completed = 0
     obs = _get_obs(env)
-    ep_step = torch.zeros(env.unwrapped.num_envs, device=env.unwrapped.device, dtype=torch.long)
-    ep_fell = torch.zeros(env.unwrapped.num_envs, device=env.unwrapped.device, dtype=torch.bool)
-    ep_peak_jerk = torch.zeros(env.unwrapped.num_envs, device=env.unwrapped.device)
+    num_envs = env.unwrapped.num_envs
+    device = env.unwrapped.device
+    ep_step = torch.zeros(num_envs, device=device, dtype=torch.long)
+    ep_fell = torch.zeros(num_envs, device=device, dtype=torch.bool)
+    ep_peak_jerk = torch.zeros(num_envs, device=device)
     prev_action = None
-    prev_w = None
+    # Persistent per-env EMA state for the AAP blend weight. Assume full L2
+    # authority (w=1) at the start of every episode. NOTE: this must only be
+    # reset per-env on that env's own episode boundary, not for the whole
+    # batch whenever *any* env finishes -- with num_envs>1 that happens on
+    # almost every step and effectively disables temporal smoothing entirely.
+    prev_w = torch.ones(num_envs, device=device)
+    fresh = torch.ones(num_envs, dtype=torch.bool, device=device)
     v_hist: list[float] = []
     w_hist: list[float] = []
 
@@ -140,18 +155,23 @@ def _run_condition(env, policy_l2, policy_l1, vstop_net, condition: str, args) -
                 alpha=args.alpha,
                 alpha_low=args.alpha_low,
                 alpha_high=args.alpha_high,
+                w_prev=prev_w,
+                ema_beta=args.ema_beta,
             )
             actions = out.actions
 
             if prev_action is not None:
                 jerk = (actions - prev_action).norm(dim=-1)
                 # Emphasize jerk when authority changes (handoff).
-                if prev_w is not None:
-                    switched = (out.w_l2 - prev_w).abs() > 1e-3
-                    jerk = torch.where(switched, jerk, jerk * 0.25)
+                switched = (out.w_l2 - prev_w).abs() > 1e-3
+                jerk = torch.where(switched, jerk, jerk * 0.25)
+                # Suppress spurious jerk for envs whose prev_action/prev_w
+                # refer to a state before their own episode reset.
+                jerk = torch.where(fresh, torch.zeros_like(jerk), jerk)
                 ep_peak_jerk = torch.maximum(ep_peak_jerk, jerk)
             prev_action = actions
             prev_w = out.w_l2
+            fresh = torch.zeros(num_envs, dtype=torch.bool, device=device)
 
             v_hist.append(float(v.mean().item()))
             w_hist.append(float(out.w_l2.mean().item()))
@@ -185,8 +205,10 @@ def _run_condition(env, policy_l2, policy_l1, vstop_net, condition: str, args) -
                     ep_step[i] = 0
                     ep_fell[i] = False
                     ep_peak_jerk[i] = 0.0
-                prev_action = None
-                prev_w = None
+                # Reset EMA/jerk-continuity state only for the envs that
+                # actually ended (per-env, not the whole batch).
+                prev_w[idxs] = 1.0
+                fresh[idxs] = True
 
     # Save traces for first condition run plotting helper.
     trace_path = Path(args.output_dir) / f"trace_{condition}.pt"
