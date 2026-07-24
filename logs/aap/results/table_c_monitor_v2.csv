@@ -1,5 +1,0 @@
-split,dataset,safe_acc,unsafe_acc,overall_acc,val_loss,best_epoch,n_val,n_safe,n_unsafe
-weak push (v2),ds_push_weak_v2.pt,0.8769,0.7929,0.8475,0.258,15,400,260,140
-medium push (v2),ds_push_medium_v2.pt,0.8932,0.8711,0.8825,0.2743,10,400,206,194
-strong push (v2),ds_push_strong_v2.pt,0.9536,0.8883,0.92,0.2344,14,400,194,206
-"final (20k, v2)",stoppability_dataset_v2.pt,0.961,0.9242,0.9403,0.1773,6,4000,1743,2257
