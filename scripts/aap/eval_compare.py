@@ -88,19 +88,29 @@ def _root_height_tilt(env):
     return height, tilt
 
 
-def _apply_push(env, vx: float, vy: float):
-    """Add a base linear velocity impulse (best-effort across Isaac Lab versions)."""
+def _apply_push(env, vx: float, vy: float, env_ids: torch.Tensor | None = None):
+    """Add a base linear velocity impulse to `env_ids` (or all envs if None).
+
+    (best-effort across Isaac Lab versions)
+    """
     robot = env.unwrapped.scene["robot"]
     try:
         lin = robot.data.root_lin_vel_w.clone()
         ang = robot.data.root_ang_vel_w.clone()
-        lin[:, 0] += vx
-        lin[:, 1] += vy
+        if env_ids is None:
+            lin[:, 0] += vx
+            lin[:, 1] += vy
+        else:
+            lin[env_ids, 0] += vx
+            lin[env_ids, 1] += vy
         root_vel = torch.cat([lin, ang], dim=-1)
+        if env_ids is not None:
+            root_vel = root_vel[env_ids]
+        write_kwargs = {} if env_ids is None else {"env_ids": env_ids}
         if hasattr(robot, "write_root_velocity_to_sim"):
-            robot.write_root_velocity_to_sim(root_vel)
+            robot.write_root_velocity_to_sim(root_vel, **write_kwargs)
         elif hasattr(robot, "write_root_link_velocity_to_sim"):
-            robot.write_root_link_velocity_to_sim(root_vel)
+            robot.write_root_link_velocity_to_sim(root_vel, **write_kwargs)
         else:
             print("[WARN] Could not apply scripted push; relying on env interval push.")
     except Exception as exc:  # noqa: BLE001
@@ -130,13 +140,20 @@ def _run_condition(env, policy_l2, policy_l1, vstop_net, condition: str, args) -
 
     with torch.inference_mode():
         while completed < args.episodes and simulation_app.is_running():
-            # Scripted push to create risk.
+            # Scripted push to create risk. Applied per-env, to exactly the
+            # envs whose OWN episode has just reached push_step -- not only
+            # when the whole batch happens to be synchronized. With
+            # num_envs>1, envs desync after their first episode boundary
+            # (different envs fall / time out at different real steps), so
+            # requiring the whole batch to be at push_step simultaneously
+            # (the old `.all()` check) meant only the very first batch of
+            # episodes ever actually got pushed; every later episode ran
+            # completely unperturbed and trivially "succeeded".
             if args.push_step > 0:
                 push_mask = ep_step == args.push_step
                 if push_mask.any():
-                    # Apply to all envs at that step count (approx).
-                    if (ep_step == args.push_step).sum() > 0 and (ep_step == args.push_step).all():
-                        _apply_push(env, args.push_vx, args.push_vy)
+                    push_ids = push_mask.nonzero(as_tuple=False).squeeze(-1)
+                    _apply_push(env, args.push_vx, args.push_vy, env_ids=push_ids)
 
             a2 = policy_l2(obs)
             a1 = policy_l1(obs)
