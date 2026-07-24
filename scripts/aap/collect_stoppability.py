@@ -1,27 +1,38 @@
 """Collect stoppability labels, biased toward failure-near / boundary states.
 
-Two bias modes (can combine):
+Bias modes (can combine):
   1) --push_before_sample: disturb with a velocity push, cruise a few L2 steps,
      then hand off to π_L1 (more unstoppable / boundary labels).
-  2) --vstop PATH: after a candidate trigger, keep the sample if
-        - L1 failed (y=0), or
-        - V_stop is uncertain (in [v_low, v_high]), or
-        - random keep with --easy_keep_prob (so easy states are not zero).
+  2) --push_vx_min/--push_vx_max (+ --push_vy_min/--push_vy_max): randomize the
+     push magnitude per env within a range instead of one fixed value. One
+     collection pass then naturally spans gentle-to-hard pushes -- some envs
+     survive easily, some fail outright -- without hand-tuning a single
+     "right" push strength.
+  3) --success_keep_prob: keep EVERY failure, keep successes only with this
+     probability (no monitor needed). Prevents the saved dataset from being
+     drowned out by easy successes once the push range includes gentle pushes.
+  4) --vstop PATH (optional, alternative to success_keep_prob): after a
+     candidate trigger, keep the sample if L1 failed, or V_stop is uncertain
+     (in [v_low, v_high]), or randomly at --easy_keep_prob (for confident
+     successes).
 
-Example (recommended for paper):
+Example (recommended -- randomized push range + keep-all-failures, single pass):
+  python scripts/aap/collect_stoppability.py --headless \\
+    --checkpoint_l2 .../model_14900.pt --checkpoint_l1 .../model_5000.pt \\
+    --num_envs 64 --num_samples 15000 \\
+    --push_before_sample --push_vx_min 0.4 --push_vx_max 2.4 \\
+    --push_vy_min 0.15 --push_vy_max 0.9 \\
+    --success_keep_prob 0.3 \\
+    --sample_interval 25 --warmup_steps 30 \\
+    --output logs/aap/stoppability_dataset.pt
+
+Older fixed-push-strength style (still supported):
   python scripts/aap/collect_stoppability.py --headless \\
     --checkpoint_l2 .../model_14900.pt --checkpoint_l1 .../model_5000.pt \\
     --num_envs 64 --num_samples 15000 \\
     --push_before_sample --push_vx 0.9 --push_vy 0.4 \\
     --sample_interval 25 --warmup_steps 30 \\
     --output logs/aap/stoppability_dataset.pt
-
-Second pass (boundary refine with a trained monitor):
-  python scripts/aap/collect_stoppability.py --headless \\
-    --checkpoint_l2 ... --checkpoint_l1 ... --vstop logs/aap/vstop.pt \\
-    --num_samples 8000 --push_before_sample \\
-    --v_low 0.25 --v_high 0.75 --easy_keep_prob 0.15 \\
-    --append --output logs/aap/stoppability_dataset.pt
 """
 
 from __future__ import annotations
@@ -63,8 +74,18 @@ parser.add_argument(
     help="Apply a velocity push before each L1 handoff (default: on).",
 )
 parser.add_argument("--no_push_before_sample", action="store_true", help="Disable push-before-sample.")
-parser.add_argument("--push_vx", type=float, default=0.9)
-parser.add_argument("--push_vy", type=float, default=0.4)
+parser.add_argument("--push_vx", type=float, default=0.9, help="Fixed push_vx magnitude (used if --push_vx_min/max not set).")
+parser.add_argument("--push_vy", type=float, default=0.4, help="Fixed push_vy magnitude (used if --push_vy_min/max not set).")
+parser.add_argument(
+    "--push_vx_min",
+    type=float,
+    default=None,
+    help="Randomize push_vx per env uniformly in [min, max] instead of a fixed --push_vx. "
+    "Gives one collection pass a spread of push severities (gentle to hard) instead of a single magnitude.",
+)
+parser.add_argument("--push_vx_max", type=float, default=None)
+parser.add_argument("--push_vy_min", type=float, default=None, help="Same idea as --push_vx_min but for push_vy.")
+parser.add_argument("--push_vy_max", type=float, default=None)
 parser.add_argument("--push_delay", type=int, default=5, help="L2 steps after push before handoff.")
 parser.add_argument("--v_low", type=float, default=0.25, help="Uncertain band low (with --vstop)")
 parser.add_argument("--v_high", type=float, default=0.75, help="Uncertain band high (with --vstop)")
@@ -127,17 +148,26 @@ def _root_height_tilt(env):
     return height, tilt
 
 
-def _apply_push(env, vx: float, vy: float):
+def _apply_push(env, vx_lo: float, vx_hi: float, vy_lo: float, vy_hi: float):
+    """Push each env with an independently randomized magnitude in [lo, hi] and random sign.
+
+    Passing vx_lo == vx_hi (and vy_lo == vy_hi) reproduces the old fixed-magnitude behavior.
+    Using a real range gives a single collection pass a spread of push severities -- some
+    envs get a gentle nudge, some get knocked over hard -- instead of everyone getting the
+    exact same push, which is both simpler and more diverse than hand-tuning one "right"
+    push strength.
+    """
     robot = env.unwrapped.scene["robot"]
     try:
         lin = robot.data.root_lin_vel_w.clone()
         ang = robot.data.root_ang_vel_w.clone()
-        # Randomize push sign/magnitude a bit for diversity
         n = lin.shape[0]
+        vx_mag = torch.empty(n, device=lin.device).uniform_(vx_lo, vx_hi)
+        vy_mag = torch.empty(n, device=lin.device).uniform_(vy_lo, vy_hi)
         sx = torch.sign(torch.randn(n, device=lin.device))
         sy = torch.sign(torch.randn(n, device=lin.device))
-        lin[:, 0] += sx * vx
-        lin[:, 1] += sy * abs(vy)
+        lin[:, 0] += sx * vx_mag
+        lin[:, 1] += sy * vy_mag
         root_vel = torch.cat([lin, ang], dim=-1)
         if hasattr(robot, "write_root_velocity_to_sim"):
             robot.write_root_velocity_to_sim(root_vel)
@@ -231,7 +261,9 @@ def main():
 
             # --- Failure-near: push, then a few L2 steps, then handoff ---
             if args_cli.push_before_sample:
-                _apply_push(env, args_cli.push_vx, args_cli.push_vy)
+                vx_lo, vx_hi = (args_cli.push_vx_min, args_cli.push_vx_max) if args_cli.push_vx_min is not None else (args_cli.push_vx, args_cli.push_vx)
+                vy_lo, vy_hi = (args_cli.push_vy_min, args_cli.push_vy_max) if args_cli.push_vy_min is not None else (args_cli.push_vy, args_cli.push_vy)
+                _apply_push(env, vx_lo, vx_hi, vy_lo, vy_hi)
                 for _ in range(max(0, args_cli.push_delay)):
                     actions = policy_l2(obs)
                     obs, _, _, _ = env.step(actions)
@@ -290,6 +322,10 @@ def main():
         "push_before_sample": bool(args_cli.push_before_sample),
         "push_vx": args_cli.push_vx,
         "push_vy": args_cli.push_vy,
+        "push_vx_min": args_cli.push_vx_min,
+        "push_vx_max": args_cli.push_vx_max,
+        "push_vy_min": args_cli.push_vy_min,
+        "push_vy_max": args_cli.push_vy_max,
         "push_delay": args_cli.push_delay,
         "min_height": args_cli.min_height,
         "max_tilt": args_cli.max_tilt,

@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # Convenience wrapper: runs the fully separate steps back to back.
-#   1) scripts/aap/find_push_strength.sh   (auto-find push strength)
-#   2) scripts/aap/collect_dataset.sh      (collect dataset)
-#   3) scripts/aap/dataset_stats.py        (dataset stats table)
-#   4) scripts/aap/train_vstop.py          (train V_stop + Table C)
+#   1) scripts/aap/collect_dataset.sh      (collect dataset, randomized push range)
+#   2) scripts/aap/dataset_stats.py        (dataset stats table)
+#   3) scripts/aap/train_vstop.py          (train V_stop + Table C)
 #
 # Usage:
 #   bash scripts/aap/auto_collect_stoppability.sh <L1_checkpoint> <L2_checkpoint> [OUT_DIR]
@@ -21,9 +20,7 @@ L2="${2:?Usage: bash scripts/aap/auto_collect_stoppability.sh <L1> <L2> [OUT_DIR
 OUT="${3:-logs/aap/paper_final}"
 DATASET="$OUT/stoppability_dataset.pt"
 
-bash scripts/aap/find_push_strength.sh "$L1" "$L2" "$OUT"
-
-bash scripts/aap/collect_dataset.sh "$L1" "$L2" "" "" "$OUT"
+bash scripts/aap/collect_dataset.sh "$L1" "$L2" "$OUT"
 
 python scripts/aap/dataset_stats.py \
   --dataset "$DATASET" \

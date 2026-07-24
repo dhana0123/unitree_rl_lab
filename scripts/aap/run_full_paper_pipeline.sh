@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Full paper pipeline, start to finish:
-#   1) Auto-collect stoppability dataset (adaptive push search, single pass,
+#   1) Collect stoppability dataset (randomized push range, single pass,
 #      keeps every failure + subsampled successes) + train final V_stop
 #   2) Table A (main condition comparison, hard push)
 #   3) Table A plots
@@ -18,17 +18,16 @@
 #
 # Optional env overrides (all have sane defaults):
 #   NUM_ENVS=64
-#   PROBE_SAMPLES=800  PROBE_ITERS=6  TARGET_FAIL_LOW=0.15  TARGET_FAIL_HIGH=0.45
-#   VX_MIN=0.3  VX_MAX=3.0  VY_RATIO=0.4  PUSH_DELAY=4
-#   FINAL_SAMPLES=15000            SUCCESS_KEEP_PROB=0.3
+#   PUSH_VX_MIN=0.4  PUSH_VX_MAX=2.4  PUSH_VY_MIN=0.15  PUSH_VY_MAX=0.9  PUSH_DELAY=4
+#   NUM_SAMPLES=15000               SUCCESS_KEEP_PROB=0.3
 #   MAIN_PUSH_VX=2.0               MAIN_EPISODES=200
 #   SWEEP_PUSHES="0.8,1.2,1.6,2.0,2.4,2.8"   SWEEP_EPISODES=150
 #   BAND_PUSH_VX=2.0               BAND_EPISODES=200
 #   BANDS="0.4:0.6,0.5:0.7,0.6:0.8,0.3:0.8"  HARD_ALPHA=0.7
 #
-# Dataset collection is fully automatic (scripts/aap/auto_collect_stoppability.sh
-# does an adaptive bisection search for the right push strength, then a single
-# collection pass) -- no manual calibration or two-pass refine needed.
+# Dataset collection needs no manual push-strength tuning or search: pushes
+# are randomized per env across a wide magnitude range so one pass naturally
+# covers gentle-to-hard difficulty, and every failure is kept in the dataset.
 #
 # Fails fast on the first error (set -e) so you won't burn GPU time on a
 # broken later stage without noticing.
@@ -73,19 +72,13 @@ echo "  OUT: $OUT"
 
 echo
 echo "=================================================================="
-echo "[1a/5] Auto-find push strength"
+echo "[1a/5] Collect dataset (randomized push range)"
 echo "=================================================================="
-bash scripts/aap/find_push_strength.sh "$L1" "$L2" "$OUT"
+bash scripts/aap/collect_dataset.sh "$L1" "$L2" "$OUT"
 
 echo
 echo "=================================================================="
-echo "[1b/5] Collect dataset"
-echo "=================================================================="
-bash scripts/aap/collect_dataset.sh "$L1" "$L2" "" "" "$OUT"
-
-echo
-echo "=================================================================="
-echo "[1c/5] Dataset stats table"
+echo "[1b/5] Dataset stats table"
 echo "=================================================================="
 python scripts/aap/dataset_stats.py \
   --dataset "$DATASET" \
@@ -94,7 +87,7 @@ python scripts/aap/dataset_stats.py \
 
 echo
 echo "=================================================================="
-echo "[1d/5] Train V_stop + Table C"
+echo "[1c/5] Train V_stop + Table C"
 echo "=================================================================="
 python scripts/aap/train_vstop.py \
   --dataset "$DATASET" \
