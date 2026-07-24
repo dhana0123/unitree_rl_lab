@@ -40,13 +40,6 @@ parser.add_argument("--push_vy", type=float, default=0.0)
 parser.add_argument("--alpha", type=float, default=0.7, help="Hard-switch threshold")
 parser.add_argument("--alpha_low", type=float, default=0.5)
 parser.add_argument("--alpha_high", type=float, default=0.7)
-parser.add_argument(
-    "--ema_beta",
-    type=float,
-    default=0.85,
-    help="Temporal smoothing on the AAP blend weight w (0 = no smoothing / original memoryless behavior, "
-    "closer to 1 = slower/steadier transitions). Only affects the 'aap' condition.",
-)
 parser.add_argument("--min_height", type=float, default=0.45)
 parser.add_argument("--max_tilt", type=float, default=0.7)
 parser.add_argument("--output_dir", type=str, default="logs/aap/results")
@@ -124,11 +117,12 @@ def _run_condition(env, policy_l2, policy_l1, vstop_net, condition: str, args) -
     ep_fell = torch.zeros(num_envs, device=device, dtype=torch.bool)
     ep_peak_jerk = torch.zeros(num_envs, device=device)
     prev_action = None
-    # Persistent per-env EMA state for the AAP blend weight. Assume full L2
+    # Persistent per-env previous blend weight, used only to detect
+    # authority switches for the jerk metric (Eq. 13). Assume full L2
     # authority (w=1) at the start of every episode. NOTE: this must only be
     # reset per-env on that env's own episode boundary, not for the whole
     # batch whenever *any* env finishes -- with num_envs>1 that happens on
-    # almost every step and effectively disables temporal smoothing entirely.
+    # almost every step.
     prev_w = torch.ones(num_envs, device=device)
     fresh = torch.ones(num_envs, dtype=torch.bool, device=device)
     v_hist: list[float] = []
@@ -155,8 +149,6 @@ def _run_condition(env, policy_l2, policy_l1, vstop_net, condition: str, args) -
                 alpha=args.alpha,
                 alpha_low=args.alpha_low,
                 alpha_high=args.alpha_high,
-                w_prev=prev_w,
-                ema_beta=args.ema_beta,
             )
             actions = out.actions
 
@@ -205,7 +197,7 @@ def _run_condition(env, policy_l2, policy_l1, vstop_net, condition: str, args) -
                     ep_step[i] = 0
                     ep_fell[i] = False
                     ep_peak_jerk[i] = 0.0
-                # Reset EMA/jerk-continuity state only for the envs that
+                # Reset jerk-continuity state only for the envs that
                 # actually ended (per-env, not the whole batch).
                 prev_w[idxs] = 1.0
                 fresh[idxs] = True
