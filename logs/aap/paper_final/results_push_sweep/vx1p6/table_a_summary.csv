@@ -1,0 +1,4 @@
+condition,n,fall_rate,success_rate,mean_peak_jerk,std_peak_jerk
+aap,100,0.0000,1.0000,3.9300,2.1697
+always_l2,100,0.0600,0.9400,1.4975,1.7716
+hard_switch,100,0.0700,0.9300,4.1156,2.6088
