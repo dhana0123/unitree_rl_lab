@@ -189,35 +189,51 @@ def _apply_push(env, vx_lo: float, vx_hi: float, vy_lo: float, vy_hi: float):
         print(f"[WARN] Push failed: {exc}")
 
 
-def _keep_mask(success: torch.Tensor, v_pred: torch.Tensor | None, args) -> torch.Tensor:
-    """Decide which envs to keep in the dataset (failure-near bias).
+def _keep_mask_vstop(success: torch.Tensor, v_pred: torch.Tensor, args) -> torch.Tensor:
+    """Decide which envs to keep when a V_stop monitor is provided (uncertain-band bias).
 
-    Subsamples safe (success) and unsafe (failure) samples independently so
-    the saved dataset lands at a target safe/unsafe mix, using whichever bias
-    signal is available:
-      - if a V_stop monitor is provided: keep uncertain (boundary) successes,
-        subsample confident/easy successes at --easy_keep_prob (failures always kept).
-      - else: subsample successes at --success_keep_prob (default 1.0 = keep all)
-        and failures at --failure_keep_prob (default 1.0 = keep all). E.g.
-        --failure_keep_prob 0.9 --success_keep_prob 0.1 keeps ~90% of unsafe
-        samples and ~10% of safe samples.
+    Always keeps failures and uncertain (boundary) successes; subsamples
+    confident/easy successes at --easy_keep_prob.
     """
-    device = success.device
-    n = success.shape[0]
+    rand_s = torch.rand(success.shape[0], device=success.device)
     failed = ~success
-    rand_s = torch.rand(n, device=device)
-    rand_f = torch.rand(n, device=device)
+    uncertain = (v_pred >= args.v_low) & (v_pred <= args.v_high)
+    easy = success & ~uncertain
+    return failed | uncertain | (easy & (rand_s < args.easy_keep_prob))
 
-    if v_pred is not None:
-        uncertain = (v_pred >= args.v_low) & (v_pred <= args.v_high)
-        easy = success & ~uncertain
-        keep = failed | uncertain | (easy & (rand_s < args.easy_keep_prob))
-        return keep
 
-    success_keep_prob = args.success_keep_prob if args.success_keep_prob is not None else 1.0
-    failure_keep_prob = args.failure_keep_prob if args.failure_keep_prob is not None else 1.0
-    keep = (success & (rand_s < success_keep_prob)) | (failed & (rand_f < failure_keep_prob))
-    return keep
+def _target_quota(num_samples: int, success_keep_prob: float | None, failure_keep_prob: float | None) -> tuple[int, int]:
+    """Compute (target_safe_n, target_unsafe_n) that sum to num_samples.
+
+    --success_keep_prob / --failure_keep_prob are treated as the desired final
+    dataset RATIO (normalized against each other), not a per-sample coin-flip
+    probability. E.g. success_keep_prob=0.1, failure_keep_prob=0.9 means the
+    saved dataset should end up ~10% safe / ~90% unsafe overall -- enforced by
+    a running quota (see _quota_keep) rather than independent per-sample
+    subsampling, so a batch that happens to be mostly safe doesn't skew the
+    running composition away from the target.
+    """
+    safe_p = success_keep_prob if success_keep_prob is not None else 1.0
+    unsafe_p = failure_keep_prob if failure_keep_prob is not None else 1.0
+    total = safe_p + unsafe_p
+    safe_ratio = safe_p / total if total > 0 else 0.5
+    target_safe_n = round(num_samples * safe_ratio)
+    target_unsafe_n = num_samples - target_safe_n
+    return target_safe_n, target_unsafe_n
+
+
+def _quota_keep(is_safe: bool, safe_n: int, unsafe_n: int, target_safe_n: int, target_unsafe_n: int) -> bool:
+    """Running-quota keep decision: fill whichever class still has room.
+
+    Since unsafe (failure) states are naturally rare in the raw rollout
+    stream, this effectively keeps EVERY unsafe sample seen until its (large)
+    quota is filled, while the common safe/success samples stop being added
+    as soon as their (small) quota fills up -- so the cumulative dataset
+    converges to the target ratio instead of the per-batch ratio.
+    """
+    if is_safe:
+        return safe_n < target_safe_n
+    return unsafe_n < target_unsafe_n
 
 
 def main():
@@ -239,16 +255,18 @@ def main():
     print(f"[INFO] Loading π_L1 from {ckpt_l1}")
     print(f"[INFO] push_before_sample={args_cli.push_before_sample}  vstop={args_cli.vstop}")
 
+    target_safe_n, target_unsafe_n = _target_quota(
+        args_cli.num_samples, args_cli.success_keep_prob, args_cli.failure_keep_prob
+    )
     if args_cli.vstop is None:
-        success_keep_prob = args_cli.success_keep_prob if args_cli.success_keep_prob is not None else 1.0
-        failure_keep_prob = args_cli.failure_keep_prob if args_cli.failure_keep_prob is not None else 1.0
         print(
-            "[INFO] NOTE: forcing target keep-rates -- "
-            f"safe(success)_keep_prob={success_keep_prob:.2f}  "
-            f"unsafe(failure)_keep_prob={failure_keep_prob:.2f}  "
-            "(this shapes the raw safe/unsafe mix towards these rates; "
-            "actual final ratio also depends on the raw success/failure rate "
-            "under the chosen push range)."
+            "[INFO] NOTE: forcing target composition via a RUNNING QUOTA over the whole dataset "
+            "(not an independent per-batch/per-sample coin flip) -- "
+            f"target unsafe={target_unsafe_n} ({100.0 * target_unsafe_n / args_cli.num_samples:.1f}%)  "
+            f"target safe={target_safe_n} ({100.0 * target_safe_n / args_cli.num_samples:.1f}%)  "
+            f"out of {args_cli.num_samples} total. Every unsafe (failure) sample is kept until its quota "
+            "fills; safe (success) samples stop being added once their (smaller) quota fills -- so the "
+            "CUMULATIVE dataset converges to this ratio even while individual batches are mostly successes."
         )
 
     policy_l2, _ = load_inference_policy(env, agent_l2, ckpt_l2)
@@ -270,6 +288,11 @@ def main():
             obs_buf.append(old["obs"][i].cpu())
             label_buf.append(old["labels"][i].cpu().reshape(()).float())
         print(f"[INFO] Append mode: loaded {len(obs_buf)} existing samples from {out}")
+
+    # Running quota counters (seeded from any pre-loaded --append samples) used
+    # to enforce the target safe/unsafe composition over the CUMULATIVE dataset.
+    running_safe_n = sum(1 for lbl in label_buf if lbl.item() >= 0.5)
+    running_unsafe_n = len(label_buf) - running_safe_n
 
     obs = _get_obs(env)
     step = 0
@@ -309,17 +332,26 @@ def main():
 
             height, tilt = _root_height_tilt(env)
             success = (~fell) & (height >= args_cli.min_height) & (tilt <= args_cli.max_tilt)
-            keep = _keep_mask(success, v_pred, args_cli)
+            keep_vstop = _keep_mask_vstop(success, v_pred, args_cli) if vstop_net is not None else None
 
             kept_this = 0
             for i in range(env.unwrapped.num_envs):
                 if len(obs_buf) >= args_cli.num_samples:
                     break
-                if not bool(keep[i].item()):
+                is_safe = bool(success[i].item())
+                if keep_vstop is not None:
+                    do_keep = bool(keep_vstop[i].item())
+                else:
+                    do_keep = _quota_keep(is_safe, running_safe_n, running_unsafe_n, target_safe_n, target_unsafe_n)
+                if not do_keep:
                     skipped += 1
                     continue
                 obs_buf.append(trigger_obs[i].cpu())
                 label_buf.append(torch.tensor(float(success[i].item())))
+                if is_safe:
+                    running_safe_n += 1
+                else:
+                    running_unsafe_n += 1
                 kept_this += 1
 
             labels_t = torch.stack(label_buf) if label_buf else torch.zeros(0)
