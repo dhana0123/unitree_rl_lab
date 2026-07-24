@@ -285,10 +285,17 @@ def main():
         f"[INFO] Saved {len(obs_buf)} samples to {out}  "
         f"pos_rate={labels.mean().item():.3f}  unsafe={(labels < 0.5).sum().item()}"
     )
-    if labels.mean().item() > 0.92:
+    pos_rate_final = labels.mean().item()
+    if pos_rate_final > 0.92:
         print(
             "[WARN] pos_rate > 0.92 (too few failures). "
             "Increase --push_vx/--push_vy, lower --push_delay, or run a --vstop refine pass."
+        )
+    elif pos_rate_final < 0.08:
+        print(
+            "[WARN] pos_rate < 0.08 (too few successes, dataset dominated by failures). "
+            "Decrease --push_vx/--push_vy, raise --push_delay (let L2 recover more before handoff), "
+            "or lower --num_envs push severity. A healthy target is roughly 0.3-0.7 pos_rate."
         )
     env.close()
 
