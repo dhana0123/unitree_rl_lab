@@ -5,8 +5,9 @@
 # env within [PUSH_VX_MIN, PUSH_VX_MAX] (and vy similarly), so a single pass
 # naturally spans gentle pushes (mostly survived) to hard pushes (mostly
 # failed) instead of everyone getting hit with the same fixed magnitude.
-# Every failure is kept; successes are subsampled (--success_keep_prob) so
-# the saved dataset isn't drowned out by easy survivals.
+# Unsafe (failure) and safe (success) samples are subsampled independently
+# so the saved dataset lands at a target mix -- by default keep 90% of the
+# unsafe samples and only 10% of the safe samples.
 #
 # Usage:
 #   bash scripts/aap/collect_dataset.sh <L1> <L2> [OUT_DIR]
@@ -17,7 +18,8 @@
 #   PUSH_VY_MIN=0.15  PUSH_VY_MAX=0.9
 #   PUSH_DELAY=4
 #   NUM_SAMPLES=15000          # size of the dataset written to disk
-#   SUCCESS_KEEP_PROB=0.3      # fraction of successes kept
+#   SUCCESS_KEEP_PROB=0.1      # fraction of safe (success) samples kept
+#   FAILURE_KEEP_PROB=0.9      # fraction of unsafe (failure) samples kept
 #
 # Output: $OUT_DIR/stoppability_dataset.pt
 
@@ -44,13 +46,14 @@ PUSH_VY_MIN="${PUSH_VY_MIN:-0.15}"
 PUSH_VY_MAX="${PUSH_VY_MAX:-0.9}"
 PUSH_DELAY="${PUSH_DELAY:-4}"
 NUM_SAMPLES="${NUM_SAMPLES:-15000}"
-SUCCESS_KEEP_PROB="${SUCCESS_KEEP_PROB:-0.3}"
+SUCCESS_KEEP_PROB="${SUCCESS_KEEP_PROB:-0.1}"
+FAILURE_KEEP_PROB="${FAILURE_KEEP_PROB:-0.9}"
 
 DATASET="$OUT/stoppability_dataset.pt"
 
 echo "=================================================================="
 echo "[COLLECT] push_vx in [$PUSH_VX_MIN, $PUSH_VX_MAX], push_vy in [$PUSH_VY_MIN, $PUSH_VY_MAX]"
-echo "  keep ALL failures + ${SUCCESS_KEEP_PROB} of successes (n=$NUM_SAMPLES)"
+echo "  keep ${FAILURE_KEEP_PROB} of unsafe (failures) + ${SUCCESS_KEEP_PROB} of safe (successes) (n=$NUM_SAMPLES)"
 echo "=================================================================="
 python scripts/aap/collect_stoppability.py --headless \
   --checkpoint_l2 "$L2" --checkpoint_l1 "$L1" \
@@ -60,6 +63,7 @@ python scripts/aap/collect_stoppability.py --headless \
   --push_vy_min "$PUSH_VY_MIN" --push_vy_max "$PUSH_VY_MAX" \
   --push_delay "$PUSH_DELAY" \
   --success_keep_prob "$SUCCESS_KEEP_PROB" \
+  --failure_keep_prob "$FAILURE_KEEP_PROB" \
   --sample_interval 25 --warmup_steps 30 \
   --output "$DATASET"
 
