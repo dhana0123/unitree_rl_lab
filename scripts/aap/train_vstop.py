@@ -7,6 +7,7 @@ Example:
 from __future__ import annotations
 
 import argparse
+import csv
 import os
 import sys
 from pathlib import Path
@@ -30,6 +31,14 @@ def parse_args():
     p.add_argument("--val_ratio", type=float, default=0.2)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
+    p.add_argument(
+        "--table_output",
+        type=str,
+        default=None,
+        help="Optional CSV path for Table C (monitor quality). "
+        "Defaults to <output_dir>/results/table_c_monitor.csv",
+    )
+    p.add_argument("--split_name", type=str, default="validation", help="Row label for Table C")
     return p.parse_args()
 
 
@@ -65,6 +74,7 @@ def main():
 
     best_val = float("inf")
     best_state = None
+    best_metrics = None
 
     for epoch in range(1, args.epochs + 1):
         model.train()
@@ -112,6 +122,16 @@ def main():
         if val_loss < best_val:
             best_val = val_loss
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            best_metrics = {
+                "epoch": epoch,
+                "val_loss": val_loss,
+                "acc": acc,
+                "safe_acc": safe_acc,
+                "unsafe_acc": unsafe_acc,
+                "n_val": n_val,
+                "n_safe": safe_total,
+                "n_unsafe": unsafe_total,
+            }
 
     out = Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -125,6 +145,33 @@ def main():
         out,
     )
     print(f"[INFO] Saved V_stop monitor to {out}")
+
+    # Table C: monitor quality (best-epoch validation metrics).
+    table_path = Path(args.table_output) if args.table_output else out.parent / "results" / "table_c_monitor.csv"
+    table_path.parent.mkdir(parents=True, exist_ok=True)
+    row = {
+        "split": args.split_name,
+        "dataset": Path(args.dataset).name,
+        "safe_acc": round(best_metrics["safe_acc"], 4),
+        "unsafe_acc": round(best_metrics["unsafe_acc"], 4),
+        "overall_acc": round(best_metrics["acc"], 4),
+        "val_loss": round(best_metrics["val_loss"], 4),
+        "best_epoch": best_metrics["epoch"],
+        "n_val": best_metrics["n_val"],
+        "n_safe": best_metrics["n_safe"],
+        "n_unsafe": best_metrics["n_unsafe"],
+    }
+    write_header = not table_path.exists()
+    with table_path.open("a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(row.keys()))
+        if write_header:
+            writer.writeheader()
+        writer.writerow(row)
+    print(f"[INFO] Wrote/updated Table C at {table_path}")
+    print(
+        f"[INFO] Table C row -> safe_acc={row['safe_acc']}  unsafe_acc={row['unsafe_acc']}  "
+        f"overall_acc={row['overall_acc']}"
+    )
 
 
 if __name__ == "__main__":
