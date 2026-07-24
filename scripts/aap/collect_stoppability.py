@@ -239,6 +239,18 @@ def main():
     print(f"[INFO] Loading π_L1 from {ckpt_l1}")
     print(f"[INFO] push_before_sample={args_cli.push_before_sample}  vstop={args_cli.vstop}")
 
+    if args_cli.vstop is None:
+        success_keep_prob = args_cli.success_keep_prob if args_cli.success_keep_prob is not None else 1.0
+        failure_keep_prob = args_cli.failure_keep_prob if args_cli.failure_keep_prob is not None else 1.0
+        print(
+            "[INFO] NOTE: forcing target keep-rates -- "
+            f"safe(success)_keep_prob={success_keep_prob:.2f}  "
+            f"unsafe(failure)_keep_prob={failure_keep_prob:.2f}  "
+            "(this shapes the raw safe/unsafe mix towards these rates; "
+            "actual final ratio also depends on the raw success/failure rate "
+            "under the chosen push range)."
+        )
+
     policy_l2, _ = load_inference_policy(env, agent_l2, ckpt_l2)
     policy_l1, _ = load_inference_policy(env, agent_l1, ckpt_l1)
 
@@ -311,13 +323,17 @@ def main():
                 kept_this += 1
 
             labels_t = torch.stack(label_buf) if label_buf else torch.zeros(0)
-            pos_rate = float(labels_t.mean().item()) if len(labels_t) else 0.0
-            unsafe_n = int((labels_t < 0.5).sum().item()) if len(labels_t) else 0
+            total_n = len(labels_t)
+            safe_n = int((labels_t >= 0.5).sum().item()) if total_n else 0
+            unsafe_n = int((labels_t < 0.5).sum().item()) if total_n else 0
+            safe_pct = 100.0 * safe_n / max(1, total_n)
+            unsafe_pct = 100.0 * unsafe_n / max(1, total_n)
             print(
-                f"[INFO] collected {len(obs_buf)}/{args_cli.num_samples}  "
+                f"[INFO] collected {total_n}/{args_cli.num_samples}  "
                 f"batch_keep={kept_this}/{env.unwrapped.num_envs}  "
                 f"batch_success={success.float().mean().item():.3f}  "
-                f"pos_rate={pos_rate:.3f}  unsafe={unsafe_n}  skipped={skipped}"
+                f"safe={safe_n} ({safe_pct:.1f}%)  unsafe={unsafe_n} ({unsafe_pct:.1f}%)  "
+                f"skipped={skipped}"
             )
 
             obs = _get_obs(env)
@@ -354,9 +370,13 @@ def main():
         "collected_at": datetime.now().isoformat(timespec="seconds"),
     }
     torch.save({"obs": torch.stack(obs_buf), "labels": labels, "metadata": metadata}, out)
+    final_n = len(labels)
+    final_safe = int((labels >= 0.5).sum().item())
+    final_unsafe = int((labels < 0.5).sum().item())
     print(
-        f"[INFO] Saved {len(obs_buf)} samples to {out}  "
-        f"pos_rate={labels.mean().item():.3f}  unsafe={(labels < 0.5).sum().item()}"
+        f"[INFO] Saved {final_n} samples to {out}  "
+        f"safe={final_safe} ({100.0 * final_safe / max(1, final_n):.1f}%)  "
+        f"unsafe={final_unsafe} ({100.0 * final_unsafe / max(1, final_n):.1f}%)"
     )
     pos_rate_final = labels.mean().item()
     if pos_rate_final > 0.92:

@@ -51,9 +51,15 @@ FAILURE_KEEP_PROB="${FAILURE_KEEP_PROB:-0.9}"
 
 DATASET="$OUT/stoppability_dataset.pt"
 
+UNSAFE_PCT=$(python -c "print(round(${FAILURE_KEEP_PROB} * 100, 1))")
+SAFE_PCT=$(python -c "print(round(${SUCCESS_KEEP_PROB} * 100, 1))")
+
+echo "=================================================================="
+echo "[TARGET] Forcing keep-rate: ${UNSAFE_PCT}% of unsafe (failures) kept, ${SAFE_PCT}% of safe (successes) kept"
+echo "  (override with FAILURE_KEEP_PROB=x.xx / SUCCESS_KEEP_PROB=x.xx env vars)"
 echo "=================================================================="
 echo "[COLLECT] push_vx in [$PUSH_VX_MIN, $PUSH_VX_MAX], push_vy in [$PUSH_VY_MIN, $PUSH_VY_MAX]"
-echo "  keep ${FAILURE_KEEP_PROB} of unsafe (failures) + ${SUCCESS_KEEP_PROB} of safe (successes) (n=$NUM_SAMPLES)"
+echo "  n=$NUM_SAMPLES samples -> $DATASET"
 echo "=================================================================="
 python scripts/aap/collect_stoppability.py --headless \
   --checkpoint_l2 "$L2" --checkpoint_l1 "$L1" \
